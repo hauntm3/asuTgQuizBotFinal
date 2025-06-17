@@ -1,0 +1,24 @@
+# Файлы с переменными окружения
+.env
+# База данных
+*.db
+*.sqlite
+*.sqlite3
+db.sqlite3
+
+# Кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Виртуальное окружение
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+
+# Логи
+*.log 
