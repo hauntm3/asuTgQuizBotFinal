@@ -4,7 +4,7 @@ import random
 import os
 from contextlib import contextmanager
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -18,7 +18,6 @@ from database import create_tables, get_db, Question, UserProgress, UserStats
 from sqlalchemy import select, desc, func
 from datetime import datetime
 
-# Импортируем все необходимое из custom_tests
 from custom_tests import (
     start_test_creation,
     ask_test_name,
@@ -74,13 +73,11 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, message=
         [InlineKeyboardButton("ℹ️ Помощь", callback_data="help")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-
     text = message or (
         "🎯 Добро пожаловать в Quiz Bot!\n\n"
         "Здесь вы можете проверить свои знания Java, Python и SQL на разных уровнях сложности.\n"
         "Выберите действие из меню ниже:"
     )
-
     if update.callback_query:
         await update.callback_query.edit_message_text(
             text=text, reply_markup=reply_markup
@@ -110,7 +107,7 @@ async def handle_language_selection(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     await query.answer()
 
-    # Сохраняем выбранный язык в контексте пользователя
+    # Сохраняем выбранный язык пользователя
     context.user_data["selected_language"] = query.data.split("_")[1]
 
     # Показываем уровни сложности для выбранного языка
@@ -323,6 +320,7 @@ async def finish_test(
     mmr_change = 0
     old_mmr = 0
     new_mmr = 0
+    lang = None
 
     with get_db() as db:
         progress = (
@@ -334,19 +332,31 @@ async def finish_test(
         level = progress.level
         progress.is_testing = False
 
+        # Определяем язык теста
+        if "_" in level:
+            # Пример: junior_python, middle_java
+            parts = level.split("_")
+            if len(parts) == 2:
+                _, lang = parts
+            elif len(parts) == 3:
+                # На случай если формат другой
+                lang = parts[-1]
+            else:
+                lang = "java"  # по умолчанию
+        else:
+            lang = "java"
+
         # Обновляем статистику пользователя
         stats = db.query(UserStats).filter(UserStats.user_id == user_id).first()
-        if stats:
-            # Рассчитываем изменение MMR
+        if stats and lang in ("python", "java", "sql"):
+            mmr_field = f"mmr_{lang}"
+            tests_field = f"total_tests_{lang}"
             mmr_change = stats.calculate_mmr_change(correct_answers, level)
-            old_mmr = stats.mmr
-            stats.mmr = max(
-                0, stats.mmr + mmr_change
-            )  # MMR не может быть отрицательным
-            new_mmr = stats.mmr  # Сохраняем новый MMR в локальную переменную
-            stats.total_tests += 1
+            old_mmr = getattr(stats, mmr_field)
+            setattr(stats, mmr_field, max(0, old_mmr + mmr_change))
+            new_mmr = getattr(stats, mmr_field)
+            setattr(stats, tests_field, getattr(stats, tests_field) + 1)
             stats.last_test_date = datetime.utcnow()
-
         db.commit()
 
     percentage = (correct_answers / 10) * 100
@@ -395,47 +405,68 @@ async def finish_test(
 
 
 async def show_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    with get_db() as db:
-        # Получаем топ-5 пользователей по MMR
-        top_users = (
-            db.query(UserStats)
-            .filter(UserStats.total_tests > 0)
-            .order_by(desc(UserStats.mmr))
-            .limit(5)
-            .all()
-        )
-
-    text = "🏆 Таблица лидеров\n\n"
-    medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
-    ranks = ["Грандмастер", "Мастер", "Эксперт", "Специалист", "Новичок"]
-
-    for i, user in enumerate(top_users):
-        medal = medals[i]
-        rank = ranks[i] if user.mmr >= 1000 else "Новичок"
-        username = user.username or f"User{user.user_id}"
-
-        # Добавляем звездочки в зависимости от MMR
-        stars = "⭐" * (user.mmr // 200)  # 1 звезда за каждые 200 MMR
-
-        text += (
-            f"{medal} {username}\n"
-            f"    {stars}\n"
-            f"    Ранг: {rank}\n"
-            f"    MMR: {user.mmr}\n"
-            f"    Тестов пройдено: {user.total_tests}\n\n"
-        )
-
-    if not top_users:
-        text += "😢 Пока никто не прошел ни одного теста\n"
-        text += "🎯 Станьте первым в рейтинге!\n"
-
+    query = update.callback_query
+    # Если язык уже выбран, показываем топ по нему
+    if context.user_data.get("leaderboard_language"):
+        selected_language = context.user_data["leaderboard_language"]
+        lang_display = LANGUAGE_DISPLAY.get(selected_language, selected_language.capitalize())
+        mmr_field = f"mmr_{selected_language}"
+        tests_field = f"total_tests_{selected_language}"
+        with get_db() as db:
+            # Получаем топ-5 пользователей по MMR выбранного языка
+            top_users = (
+                db.query(UserStats)
+                .filter(getattr(UserStats, tests_field) > 0)
+                .order_by(getattr(UserStats, mmr_field).desc())
+                .limit(5)
+                .all()
+            )
+        text = f"🏆 Таблица лидеров по {lang_display}\n\n"
+        medals = ["🥇", "🥈", "🥉", "4️⃣", "5️⃣"]
+        ranks = ["Грандмастер", "Мастер", "Эксперт", "Специалист", "Новичок"]
+        for i, user in enumerate(top_users):
+            medal = medals[i]
+            rank = ranks[i] if getattr(user, mmr_field) >= 1000 else "Новичок"
+            username = user.username or f"User{user.user_id}"
+            stars = "⭐" * (getattr(user, mmr_field) // 200)
+            text += (
+                f"{medal} {username}\n"
+                f"    {stars}\n"
+                f"    Ранг: {rank}\n"
+                f"    MMR: {getattr(user, mmr_field)}\n"
+                f"    Тестов пройдено: {getattr(user, tests_field)}\n\n"
+            )
+        if not top_users:
+            text += "😢 Пока никто не прошел ни одного теста по этому языку\n"
+            text += "🎯 Станьте первым в рейтинге!\n"
+        keyboard = [
+            [InlineKeyboardButton("🔄 Пройти тест", callback_data="start_test")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")],
+            [InlineKeyboardButton("⬅️ К выбору языка", callback_data="leaderboard_select_lang")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+        # Сброс выбора языка для следующего раза
+        context.user_data["leaderboard_language"] = None
+        return
+    # Если язык не выбран, показываем выбор языка
     keyboard = [
-        [InlineKeyboardButton("🔄 Пройти тест", callback_data="start_test")],
+        [InlineKeyboardButton("Java", callback_data="leaderboard_lang_java")],
+        [InlineKeyboardButton("Python", callback_data="leaderboard_lang_python")],
+        [InlineKeyboardButton("SQL", callback_data="leaderboard_lang_sql")],
         [InlineKeyboardButton("🏠 Главное меню", callback_data="main_menu")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(
+        "Выберите язык для таблицы лидеров:", reply_markup=reply_markup
+    )
 
-    await update.callback_query.edit_message_text(text=text, reply_markup=reply_markup)
+
+def show_leaderboard_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    lang = query.data.split("_")[-1]
+    context.user_data["leaderboard_language"] = lang
+    return show_leaderboard(update, context)
 
 
 async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -546,7 +577,7 @@ def setup_handlers(application):
                 )
             ],
         },
-        fallbacks=[CommandHandler("cancel", cancel_creation)],
+        fallbacks=[CommandHandler("cancel", cancel_creation), CommandHandler("start", start)],
         per_message=False,  # Используем один обработчик на пользователя
     )
 
@@ -567,6 +598,8 @@ def setup_handlers(application):
     application.add_handler(
         CallbackQueryHandler(show_leaderboard, pattern="^leaderboard$")
     )
+    application.add_handler(CallbackQueryHandler(show_leaderboard_language, pattern="^leaderboard_lang_"))
+    application.add_handler(CallbackQueryHandler(show_leaderboard, pattern="^leaderboard_select_lang$"))
     application.add_handler(CallbackQueryHandler(show_help, pattern="^help$"))
     application.add_handler(
         CallbackQueryHandler(show_test_catalog, pattern="^test_catalog(?:_\d+)?$")

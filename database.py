@@ -20,7 +20,7 @@ class Question(Base):
     __tablename__ = "questions"
 
     id = Column(Integer, primary_key=True)
-    level = Column(String, nullable=False)  # junior, middle, senior
+    level = Column(String, nullable=False)  
     question_text = Column(String, nullable=False)
     option1 = Column(String, nullable=False)
     option2 = Column(String, nullable=False)
@@ -41,18 +41,23 @@ class UserProgress(Base):
     last_answer_time = Column(DateTime, default=datetime.utcnow)
     question_ids = Column(
         String, nullable=True
-    )  # Хранит ID выбранных вопросов через запятую
+    )  
 
 
 class UserStats(Base):
     __tablename__ = "user_stats"
-
     id = Column(Integer, primary_key=True)
     user_id = Column(Integer, unique=True)
     username = Column(String)
     mmr = Column(Integer, default=1000)  # Начальный MMR
     total_tests = Column(Integer, default=0)
     last_test_date = Column(DateTime)
+    mmr_python = Column(Integer, default=1000)
+    mmr_java = Column(Integer, default=1000)
+    mmr_sql = Column(Integer, default=1000)
+    total_tests_python = Column(Integer, default=0)
+    total_tests_java = Column(Integer, default=0)
+    total_tests_sql = Column(Integer, default=0)
 
     def calculate_mmr_change(
         self, correct_answers: int, difficulty_level: str, opponent_mmr: int = 1500
